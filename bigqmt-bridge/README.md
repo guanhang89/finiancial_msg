@@ -121,7 +121,7 @@ Copy-Item -Recurse "<本包>\qmt_side\bigqmt_signal_trader" "$SP\bigqmt_signal_t
 1. **长表转置**：桥的 `get_market_data` 返回长表，shim 归一化为 miniQMT 原生 `{field: DataFrame(index=代码, columns=时间)}`，时间标签纯数字化（`20260807 14:56:00`→`20260807145600`）。
 2. **多股批量拆分**：大 QMT 多股查询返回异常结构时，shim 自动逐股查询再按 field 拼接。
 3. **`time` 字段 + 空起始时间**：大 QMT 不支持 `time` 字段 → RPC 前剥离、返回时按 epoch 毫秒合成；`start_time=''` 会被服务端拒绝（1m 数据权限限近一年）→ shim 按 `count`×周期推算起始时间（封顶 360 天）。
-4. **`download_history_data` 不可用**：大 QMT 终端 SDK 连不上数据服务。改由终端自身下载：QMT【系统→设置→行情/数据下载】开登录后自动下载+盘后补日线；首次手动补近 2 年；业务代码里的 `download_history_data` 调用加 try/except 容忍失败。
+4. **数据下载分两层（2026-08-11 实测定论）**：终端原生 `download_history_data`（RPC 直达）**不可用**——终端内 SDK 报「无法连接数据服务」，与周期、年份无关；但 shim 的 `xtdata.download_history_data` **可用**，语义是「RPC 读取 + 客户端本地缓存」（cache-through），不触发终端下载，业务代码可正常调用。**可读范围取决于终端本地数据覆盖**（实测 1m 可读 2 年前的 2024-01，5302 根但不完整）——「1m 限近一年」是当时覆盖状态的表象，非固定权限；`start_time=''` 仍会被服务端拒绝，shim 按 `count` 推算起始时间的逻辑保留。历史补录只能走终端自身：QMT【系统→设置→行情/数据下载】开自动下载，或【数据管理】手动补。
 
 ## 5. 交易链路验证（标准操作流程）
 
@@ -186,7 +186,7 @@ Rename-Item "$SP\xtquant_miniqmt_backup" "$SP\xtquant"
 | `on_order_error` 不推送 | 废单不由回调触发 | 业务侧 60s 轮询终态处理 |
 | `on_disconnected` 不触发 | 无断线推送 | 探活式重连（每轮 `query_stock_asset`，异常即重连） |
 | `on_account_status` 不推送 | 仅少一条日志 | 无 |
-| `download_history_data` 空操作 | 无法主动补历史 | 终端自动下载（1m 限近一年） |
+| 终端原生下载 RPC 不可用 | 无法脚本化补历史数据 | 终端 GUI【数据管理】补录/自动下载；shim `download_history_data`（读取+本地缓存）业务可用 |
 | 模拟运行模式不产生事件 | 事件链路只能在实盘验证 | 小额 ETF 单 E2E（第 5.3 节） |
 | 首次重 RPC 冷启动 >6s | 偶发超时 | 客户端超时 15s，热身后 ~0.5s |
 | RPC p50≈13ms | 对秒级轮询无影响 | — |
@@ -195,7 +195,7 @@ Rename-Item "$SP\xtquant_miniqmt_backup" "$SP\xtquant"
 
 - **2026-08-09**：只读链路全通过（模拟端+正式端：connect/资产/持仓/委托/tick/1d 前复权/1m 240 根/多股合并/交易日历/合约详情）；下单闸门验证通过（关闭时 `rpc method is not allowed`）；确认 redis-py 8.x 与 Redis 5.0 不兼容 → 固定 `redis==5.2.1`。
 - **2026-08-10**：事件链路增强上线（事件携带 `uid/sysid/remark`）；复盘确认旧版事件无用户标识导致 RPC 委托无法归属（曾致重复下单），已通过 `bq:` 用户委托 ID 机制修复。
-- **2026-08-11**：实盘 E2E 全通过 —— ETF 100 股 @ 卖一价买入成交（事件 `50`→成交回报→`56`，持仓核对 +100 一致）；低价挂单撤单（`50`→`54`，撤单按 `bq:` ID 自动解析 sysid）。模拟运行模式验证：信号单不产生事件，符合设计。
+- **2026-08-11**：实盘 E2E 全通过 —— ETF 100 股 @ 卖一价买入成交（事件 `50`→成交回报→`56`，持仓核对 +100 一致）；低价挂单撤单（`50`→`54`，撤单按 `bq:` ID 自动解析 sysid）。模拟运行模式验证：信号单不产生事件，符合设计。下载能力实测定论：终端原生 `download_history_data` RPC 不可用（「无法连接数据服务」，与年份无关）；shim 路径可用；1m 数据可读 2 年前（覆盖不完整），「1m 限近一年」为当时本地覆盖表象而非固定权限。
 
 ## 11. 参考文档索引
 
